@@ -1,0 +1,469 @@
+        MICROSERVICES CHAT APP WITH NODE/TYPESCRIPT + GRAPHQL + MYSQL + REACT
+
+Entire playlist URL: https://www.youtube.com/watch?v=PUmXufS9y-8&list=PLnTRniWXnjf8QRhvnklsyapGfFZ6ACdSf&ab_channel=BetterCodingAcademy
+
+We start creating the folders,then the Dockerfile for api-gateway srv(we will go out through this service same as we have done before).I start a package.json with(yarn init -y) and install (yarn add -D module-alias ts-node-dev typescript).
+We add the 'watch' script:
+
+"watch":"ts-node-dev --respawn index.dev.ts
+
+Ojo,que desde que hizo el video ahora se necesita un tsconfig.json para que ts-node-dev compile el typescript.Para crearlo basta con:
+>tsc --init <- ojo que es --init y confunde mucho
+Además,para ejecutar tsc necesito typescript de forma global o bien especificar el comando en los scripts:
+"tsc":"tsc" <- tendré visión sobre el typescript recien instalado:
+<- yarn run tsc -- --init 
+
+Usar cualquiera de las dos para generar el tsconfig y ya compilará.
+Creamos el file para configurar PhpMyAdmin y despues el compose.
+
+VIDEO 02
+
+Comenzamos instalando las siguientes librerias en el users-service:
+<yarn add config mysql2 reflect-metadata typeorm
+Parece que config es como dotenv y que reflect-metadata la necesita el orm
+Instalamos tmb algunas dev-dependencies para el tipado.
+
+Vamos a crear el file de conexión.
+TIP: esta libreria config realmente puede devolver cualquier cosa al llamar a la env con config.get(string) y por ello TS lo tipa como unknown,pero la propiedad url necesita un string:
+url: <string>config.get("var") <- as string tmb  valdría
+
+NOTA:esta libreria 'config' tiene como standard tener un file llamado default.ts al root level metido en el folder config luego creamos el file config/default.ts para los valores por default(realmente podria tener production.ts,etc en esta carpeta,lo importante es la carpeta y su altura)
+
+Fijate que el crea el tsconfig.json de memoria y tal.Hay que habilitar los decoradores para typeorm y crearnos el alias #root(en la propiedad paths):
+{
+        "compilerOptions":{
+                "emitDecoratorMetadata":true,
+                "experimentalDecorators":true,
+                "esModuleInterop":true,
+                "module":"commonjs",
+                "paths":{
+                        "#root/*":["./src/*"]
+                },
+                "skipLibCheck":true,
+                "strict":true,
+                "strictPropertyInitialization":false,
+                "target":"es5"
+        }
+}
+NOTA: aún faltaba en el package.json declarar lo mismo,diria yo que es necesario.Interesante:
+  "_moduleAliases":{
+    "#root":"./src"
+  }
+
+Levantamos el docker y debe conectar con la DB.Turno de las primeras migraciones.TypeORM expone toda una APi por Cli:
+>yarn typeorm migration:create <name> <- yarn delante para que use el typeorm(binario) del proyecto
+
+Sin embargo puedo ver que crear la migracion en la raiz,tenemos que configurar el orm en el file ormconfig.json(en la raiz):
+{
+  "cli": {
+    "migrationsDir": "src/db/migrations"
+  },
+  "entities": [ "src/db/entities/*.ts" ],
+  "logging": false,
+  "migrations": ["src/db/migrations/*.ts"],
+  "synchronize": true,
+  "type": "mysql",
+  "url": "mysql://root:password@users-service-db/db"
+}
+
+Ahora si,el proyecto ya sabe donde van las migraciones,las entities,etc.Amazing.Fijate que hay un par de cambios en los comandos desde que hizo el video el prehistoric typeador
+
+NOTA:vamos a crear un indice tmb en la columna username(fijate que si bien un indice permite hacer busquedas más rápidas sobre esa columna también hace los updates más lentos,ya que tiene que cambiar esa segunda tabla con los indices).Con todo esto la migracion para crear la tabla users queda asi:
+
+import { MigrationInterface, QueryRunner, Table, TableIndex } from "typeorm";
+
+export class Users1674926298428 implements MigrationInterface {
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.createTable(
+      new Table({
+        columns: [
+          {
+            isPrimary: true,
+            length: "36",
+            name: "id",
+            type: "char",
+          },
+          {
+            length: "25",
+            name: "username",
+            type: "varchar",
+          },
+          {
+            // 60 porque bcrypt genera un varchar de 60 siempre y no necesitamos más
+            length: "60",
+            name: "passwordHash",
+            type: "char",
+          },
+          {
+            default: "now()",
+            name: "createdAt",
+            type: "timestamp",
+          },
+        ],
+        name: "users",
+      }),
+    );
+    // esto crea un indice para indexado rápido,supongo
+    await queryRunner.createIndex(
+      "users",
+      new TableIndex({
+        columnNames: ["username"],
+        isUnique: true,
+        name: "unique_username",
+      }),
+    );
+  }
+
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.dropTable("users");
+  }
+}
+
+Fijate que al final esta migracion solo vale para crear/destruir la tabla las veces que necesite y que obviamente ese dropTable es muy peligroso.Creamos un par de scripts para realizar estas acciones:
+
+"db:migrate:create": "ts-node ./node_modules/typeorm/cli.js migration:create", <- crear
+"db:migrate:run": "ts-node ./node_modules/typeorm/cli.js migration:run", <- el up
+"db:migrate:undo": "ts-node ./node_modules/typeorm/cli.js migration:revert" <- el down
+
+Fijate que hubo que hacer downgrade a la 29 para que pueda leer el puto file de configuración(investigar como se haría con versiones nuevas)
+TIP: un simple cd me podria valer en el script:
+"migration:create":"cd src/db/migrations && npx typeorm-ts-node-commonjs migration:create",
+"migration:run":"cd src/db/migrations && npx typeorm-ts-node-commonjs migration:create",
+
+
+Hay que entrar al contenedor para ejecutar el script para que quede isolated(sólo él tiene la conexión contra la db).
+Por último creamos la Entity para un User:
+
+import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn } from "typeorm"
+
+@Entity("users")
+export default class User {
+  @PrimaryGeneratedColumn("uuid")
+  id: string;
+
+  @Column()
+  username: string
+
+  // select a false nunca la selecciona(ya que no tiene sentido ver la pass)
+  @Column({select:false})
+  passwordHash: string;
+
+  @CreateDateColumn()
+  createdAt: string;
+}
+Ojo,que hay que ir añadiendo las Entidades a la conexión:
+
+import config from "config";
+import { Connection, createConnection } from "typeorm";
+import User from "./entities/User";
+
+let connection: Connection;
+
+export const initConnection = async () => {
+  connection = await createConnection({
+    entities:[User],
+    type:"mysql",
+    url: <string>config.get("USERS_SERVICE_DB_URL"),
+  })
+}
+const getConnection = () => connection;
+export default getConnection;
+Terriblemente interesante todo esto,as always
+
+    VIDEO 03 SETTING UP EXPPRESS AND CREATING FIRST ROUTE
+
+Let's begin installing express and cors:
+>yarn add express cors
+>yarn add -D @types/express @types/cors <- fijate que ambas vienen sin tipado
+Lo siguiente es crear el accesEnv(pero si ya está usando la lib config,no??):
+const cache: { [key: string]: string } = {};
+
+const accessEnv = (key:string, defaultValue: string): string => {
+  // si no esta la key devuelvo el defaultValue o un error
+  if(!(key in process.env) || typeof process.env[key] === "undefined"){
+    if(defaultValue) return defaultValue;
+    throw new Error(`${key} not found in process.env!`);
+  }
+
+  if(!(key in cache )){
+    cache[key] = <string>process.env[key]; 
+
+  }
+  return cache[key];
+}
+
+export default accessEnv;
+
+IMPORTANTE: hay que dejar todos los puertos abiertos en el servidor express:
+El origin de cors fully opened que tmb es importante.Very interesting stuff
+import cors from "cors";
+import express, {Request,Response, NextFunction} from "express";
+import accessEnv from "xxx";
+import setupRoutes from "./setupRoutes";
+
+const startServer = () => {
+   const app = express();
+   app.use(express.json())
+   app.use(cors({
+    origin:(origin,cb) => return cb(null,true),
+    credentials: true
+   }))
+   setupRoutes(app)
+   const PORT = parseInt(accessEnv("PORT","7101"),10)
+   // fijate que no uso todos,pero tengo que declarar los 4
+  app.use((err:Error,req:Request,res:Response,next:NextFunction) => {
+    return res.status(500).json({
+      message:err.message
+    })
+  })
+   app.listen(PORT,"0.0.0.0",() => {
+    console.info("app listening on port " + PORT)
+   })
+}
+
+export default startServer;
+IMPORTANTE: la forma que tiene él de gestionar errores y las rutas me gusta mucho
+
+Las rutas lucen asi:
+import {Express} from "express";
+import {getRepository} from "typeorm";
+
+const setupRoutes = (app:Express) => {
+  // el getRepository es sincrono
+    const userRepository = getRepository(User);
+    app.get("/users/:userId",async (req,res,next) => {
+      try{
+       const user = await userRepository.findOne(req.params.userId);
+       if(!user) return next(new Error("No user found))
+       return res.json(user)
+      }catch(err){
+        return next(err)
+      }
+  }) 
+}
+export default setupRoutes;
+Si ahora voy al localhost:7101/users/dkfjlfk me dará error pues no hay user,pero laruta funciona.Hora de ingresar el primer User.
+
+NOTA: dado que lo vamos a hacer manualmente vamos a encriptar la pass ya,para ello usaremos bcrypt-generator.com y me llevo la pass encriptada ya.
+Fijate que para el ID tengo que seleccionar la funcion UUID
+Me copio ese Id y compruebo la ruta:
+http://localhost:7101/users/b13a3a05-9fef-11ed-a376-0242ac1c0004
+
+      VIDEO 04 SETTING UP THE AUTHENTICATION ENDPOINT
+
+Vamos a crear otra migración para la tabla UserSessions.Fijate que ésta va a tener una FK en el campo userId hacia el id de la tabla users:
+
+await queryRunner.createForeignKey("userSessions",
+  new TableForeignKey({
+    columnNames: ["userId"],
+    referencedColumnNames: ["id"],
+    referencedTable: "users"
+  })
+)
+Desde luego es bastante sencillo crear una FK con el bicho este.Recuerda que para crear la tabla tengo que entrar al contenedor y aplicar el script del package.json:
+>docker-compose exec users-service bash
+>yarn run db:migrate:run
+NOTA: fijate que se ha creado una tercera tabla 'migrations' con un histórico de las migraciones que se han aplicado,de esta forma ya sabe que users se ha ejecutado y no la ejecuta,pisando el contenido que ya tenemos.Muy pro aqui el ORM.
+
+En cuanto a la Entity luce asin:
+@Entity("userSessions")
+export default class UserSession {
+  @PrimaryGeneratedColumn("uuid)
+  id: string;
+ 
+  @Column("char",{length:36})
+  userId: string;
+  
+  @CreateDateColumn()
+  createdAt: string;
+
+  @Column("datetime")
+  expiresAt: string;
+}
+Fijate que @Column puede llevar el tipo de la columna e incluso la longitud.De echo el autor recalca que deberiamos haberlo puesto pero asi vemos todas las opciones 
+
+Fijate como con la libreria dayjs es bastante sencillo trabajar con dates:
+* El toISoString() es totalmente necesario para que sea una Date Valida para JS
+ const expiresAt = dayjs().add(USER_SESSION_EXPIRY_HOURS,"hour").toISOString();
+
+ Fijate que de nuevo vamos a usar el patrón adapter para generar el UUID:
+ import { v4 as uuidv4 } from "uuid";
+
+export const generateUUID = () => uuidv4();  
+Aunque parezca poco importante(que no lo parece) si cambiaramos la implementación de la generación de ids solo habría que cambiarlo una vez en este punto(patrón adapter era ??).
+
+    VIDEO 05 SIGNING UP USERS AND AUTHENTICATION 
+
+Vamos a empezar instalando "lodash.omit".Fijate que estamos instalando sólo la función  ya que lodash está modularizado y no tiene sentido instalar toda la lib.
+NOTA: si estoy usando TS pedirá los types declarations,que tmb están modularizados:
+>yarn add @types/lodash.omit
+
+Con este método ahora puedo omitir propiedades de cualquier objeto(fijate que lleva como segundo argumento un arreglo de propiedades a omitir):
+return res.json(omit(newUser,["passwordHash]))
+
+Claramente se puede hacer lo mismo con deconstruct(destructuring):
+const {passwordHash, ...rest} = newUser;
+return res.json(rest);
+
+TIP: recuerda que puedo reiniciar un servicio en una composición de ellos(en un docker-compose) con el comando docker-compose restart <nombre del servicio>:
+>docker-compose restart users-service
+
+        VIDEO 06 SETTING UP API GATEWAY
+
+Dado que es otro backend de express(además de GraphQL) empezamos instalando ciertas librerias:
+>yarn add apollo-server apollo-server-express config cookie-parser cors express got
+>yarn add -D typescript ts-node-dev module-alias @types/config @types/cookie-parser
+Creo un alias tmb en el package.json:
+"_moduleAliases":{
+  "#root":"./src"
+}
+También creo el archivo config/default.ts para la lib config(fijate que está más afuera que el src,en el primer nivel)
+En el archivo declaro el puerto de momento:
+export const PORT = "7000" 
+
+Recuerda que viene como string y tengo que parsearlo
+const PORT = parseInt(config.get("PORT"));
+const PORT = <number>config.get("PORT");
+A long click advances | moves forward or backward to the next song/video depending on what earphone is pulsed.Busca las instrucciones,asinto
+Demonstration(to demonstrate)
+
+
+Cambiar con FN + ctrl izda y usa ª para la 1ª o simplemente FN para el 1º,teniendo la \ con ALTGR+FN.Volver con FN+ Ctrl Izda para tener los simbolos de los numeros en vez de los FN(al pulsar FN + number,pues el number a secas va bien).En resumen si necesito simbolos tengo que volver y si necesito el de primero o segundo tengo que cambiar tmb.
+
+Fijate que al montar el servidor de ApolloServer mediante la libreria 'apollo-server-express' tenemos un problema con el tipado de un GraphQLError(ya podian solucionarlo,igual es muy complejo tu):
+
+import { GraphQLError } from "graphql";
+
+const formatGraphQLErrors = (error: GraphQLError) => {
+  // @ts-ignore
+  const errorDetails = error.originalError?.response.body;
+
+  try {
+    if (errorDetails) return JSON.parse(errorDetails);
+  } catch (e) {}
+  if (error.message) return error.message;
+  return null;
+};
+
+export default formatGraphQLErrors;
+
+Eso lo vemos al montar el server:
+import {ApolloServer} from "apollo-server-express";
+
+const apolloServer = new ApolloServer({
+  context: a => a, <- esto era para que funcionara mejor
+  formatErrors: formatGraphQLErrors, <- una funcion custom
+  resolvers; esto es igual que resolvers:resolvers
+  typeDefs:schema, <- de nuevo es otro file 
+})
+
+El schema luce asi:
+import { gql } from "graphql"; <- esta lib faltaba por instalar
+*Fijate que esto es lo más basico:
+
+const schema = gql`
+ type Mutations {}
+ type Query {}
+`;
+export default schema
+
+Dentro de type Query  metemos la primera Query:
+const schema = gql`
+
+  type Query {
+    userSession(me: Boolean!): UserSession
+  }
+Fijate que esto me obliga a crear el type UserSession:
+
+ type UserSession {
+   createdAt: Date!
+   expiresAt: Date!
+   id: ID!
+   user: User!
+ }
+
+ Y este type me obliga a declarar el scalar Date( Date no existe nativamente,pero puedo simplemente declararlo ?? no entiendo).Recuerda tmb que el tipo ID es de ellos,asi que:
+
+ const schema = gql`
+   scalar Date
+   type User {
+    id: ID!
+    username: String!
+   }
+   type UserSession {
+    createdAt: Date!
+    expiresAt: Date!
+    id: ID!
+    user: User! <- el type User tiene que estar definido ya (es secuencial esto ??)
+   }
+   type Query {
+    userSession(me: Boolean!): UserSession
+   }
+   `;
+   Es un archivo clave,obviamente.Fijate que exponer el ID no es una buena idea realmente
+
+   En cuanto a levantar un server de apollo-express es demasiado sencillo
+
+const apolloServer = new ApolloServer({
+  context: a => a,
+  formatErrors: myFn,
+  resolvers: myFile,
+  typeDefs: myFile
+})
+const app = express();
+app.use(cookieParser())
+app.use(cors({
+  origin: (origin,cb) => cb(null,true),
+  credentials:true
+}))
+apolloServer.applyMiddleware({app:app,cors:false,path:'/graphql)
+
+Si ahora vamos a localhost:7000/graphql deberiamos ver la UI(el Playground) de graphql claro que no tenemos ni resolvers ni comunicación entre los backends.Muy interesante esto
+   
+    VIDEO 07 SETTING UP A USER SESSION QUERY HANDLER
+
+Fijate que él siempre se crea una carpeta adapters con una clase en el api-gateway con las peticiones que hará este microservicio(en base a lo que necesiten los backends del resto del cluster).En este punto veo conveniente esto,tener centralizadas las peticiones:
+
+La clase luce asi de momento:
+
+import config from "config";
+import got from "got";
+
+const USERS_SERVICE_URI = <string>config.get("USERS_SERVICE_URI")
+
+export default class UsersService {
+   static async fetchUserSession({sessionId }:{sessionId:string}){
+    const body = await got.get(`${USERS_SERVICE_URI}/sessions/${sessionId}`).json();
+    return body;
+   }
+}
+Lo siguiente que siempre hace(ya que trabaja con cookies es fijar un middleware que solo deje pasar a un usuario con una session):
+
+const injectSession = async (req: Request, res: Response, next: NextFunction) => {
+  if (req.cookies.userSessionId) {
+    const userSession = await UsersService.fetchUserSession({
+      sessionId: req.cookies.userSessionId,
+    });
+    res.locals.userSession = userSession;
+  }
+  return next();
+};
+export default injectSession;
+La inyectamos en el startServer:
+  app.use(injectSession)
+
+Al final terminamos creando un resolver asi:
+
+import { ResolverContext } from "#root/graphql/types";
+
+interface Args {
+  me: boolean;
+}
+const userSessionResolver = (obj: any, args: Args, context: ResolverContext) => {
+  if (args.me !== true) throw new Error("Unsupported argument value");
+  return context.res.locals.userSession;
+};
+export default userSessionResolver;
+
+Fijate que en Windows hay que añadir --poll:
+I am following this series on windows and I found an issue on windows. Ts-node-dev doesn't detect the changes, so it doesn't restart the server. The solution is changing ts-node-dev --respawn index.dev.ts to ts-node-dev --poll --respawn index.dev.ts on all package.json. Great videos btw :D

@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    // siempre van juntas estas dos
+    "emitDecoratorMetadata": true,               
+    "experimentalDecorators": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "commonjs",
+    "paths": {
+      "#root/*":["./src/*"]
+    },
+    "target": "es2016",                                
+    "strict": true,
+    "strictPropertyInitialization": false,
+    "skipLibCheck": true
+  }
+}
